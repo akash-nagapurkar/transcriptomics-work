@@ -1,0 +1,316 @@
+---
+title: "Final Project Markdown"
+output: html_document
+date: "2023-03-27"
+---
+
+```{r Loading in data}
+#Loading in the data
+library(GEOquery)
+gse = getGEO("GSE226888")
+data = gse$GSE226888_series_matrix.txt.gz
+
+expdesign = data.frame(treatment = data$`treatment:ch1`)
+counts = read.delim("GSE226888_Hs_islets_DFMO_study_RNA_seq_Raw_Counts.txt") #raw counts are included
+
+head(counts)
+```
+
+
+```{r Creating a Counts and Design Database with Proper Row and Column Names}
+#Data Pre-processing: creating a counts and design database with proper row and column names
+counts_updated = data.frame(counts[2:21])
+row.names(counts_updated) = counts$Symbol
+
+rownames(expdesign) = colnames(counts[2:21]) #the rownames are set to the experimental type names
+print(expdesign)
+
+head(counts_updated)
+
+```
+
+
+```{r Filtering out non-DE Values}
+#Filtering out non-DE values
+medianCountByGroup = t(apply(counts_updated, 1, tapply, expdesign$treatment, median))
+
+maxMedian=apply(medianCountByGroup, 1, max)
+
+counts_filtered = counts_updated[maxMedian>=10,]
+print(counts_filtered)
+
+```
+
+```{r Normalizing the data using DESeq2}
+#data normalized with DESeq2 because this approach is robust to differences in sequencing depth and accounts for the proportion of differentially expressed genes in the data.
+library(DESeq2)
+cds = DESeqDataSetFromMatrix(countData = counts_filtered, colData = expdesign, design = ~ treatment)
+cds = estimateSizeFactors(cds)
+cds = estimateDispersions(cds)
+cds = DESeq(cds)
+norm_counts = data.frame(counts(cds, normalized = TRUE))
+head(norm_counts)
+
+```
+
+```{r Creating dataframes based on treatments that I want compared}
+#Creating dataframes based on treatments that I want compared
+cDFMO_counts_filt = norm_counts[1:10]
+cDFMO_expdesign = subset(expdesign, treatment %in% c('Unstimulated control','Treated with DFMO for 24 hours'))
+
+cinflam_counts_filt = norm_counts[c('AK1', 'AK2', 'AK3', 'AK4', 'AK5', 'AK11', 'AK12', 'AK13', 'AK14', 'AK15')]
+cinflam_expdesign = subset(expdesign, treatment %in% c('Unstimulated control','Treated with IL-1β and IFN-γ for 24 hours'))
+
+cboth_counts_filt = norm_counts[c('AK1', 'AK2', 'AK3', 'AK4', 'AK5', 'AK16', 'AK17', 'AK18', 'AK19', 'AK20')]
+cboth_expdesign = subset(expdesign, treatment %in% c('Unstimulated control','Treated with DFMO and IL-1β and IFN-γ for 24 hours'))
+
+print(cboth_counts_filt)
+print(cboth_expdesign)
+```
+
+```{r Creating a Dataset Matrix to Find Differentially Expressed Genes}
+library(DESeq2)
+cds_DFMO = DESeqDataSetFromMatrix(countData = round(cDFMO_counts_filt), colData = cDFMO_expdesign, design = ~ treatment)
+print(cds_DFMO)
+
+cds_inflam = DESeqDataSetFromMatrix(countData = round(cinflam_counts_filt), colData = cinflam_expdesign, design = ~ treatment)
+print(cds_inflam)
+
+cds_both = DESeqDataSetFromMatrix(countData = round(cboth_counts_filt), colData = cboth_expdesign, design = ~ treatment)
+print(cds_both)
+
+#need to make separate counts datasets for each comparison you want to do. So set one up for Control vs. DFMO, Control vs. Inflammatory, Control vs. Both, DFMO vs. Both, and Inflammatory vs. Both
+```
+
+```{r Plotting CDS Dispersion}
+cds_DFMO = estimateSizeFactors(cds_DFMO)
+cds_DFMO = estimateDispersions(cds_DFMO)
+plotDispEsts(cds_DFMO)
+
+cds_inflam = estimateSizeFactors(cds_inflam)
+cds_inflam = estimateDispersions(cds_inflam)
+plotDispEsts(cds_inflam)
+
+cds_both = estimateSizeFactors(cds_both)
+cds_both = estimateDispersions(cds_both)
+plotDispEsts(cds_both)
+
+# Plot tells us that as the read counts increases, the dispersion decreases and then increases. Dispersion is a parameter describing how much the variance deviates from the mean. So, as the mean of normalized counts is increasing, we get smaller, but then bigger, values of dispersion which means that our averages for this dataset are reliable for the low mean of normalized counts, but then not as reliable for larger mean counts. So, for the differentially expressed genes that are highly expressed, we should take the significance of those values with a grain of salt.
+```
+
+```{r Finding the Differentially Expressed Genes}
+cds_DFMO = DESeq(cds_DFMO) #the original count dataset matrix is then replaced by the DESeq model which finds the differentially expressed genes
+res_DFMO = data.frame(results(cds_DFMO)) #we then find the results and assign them to a variable
+print(res_DFMO)
+
+cds_inflam = DESeq(cds_inflam) #the original count dataset matrix is then replaced by the DESeq model which finds the differentially expressed genes
+res_inflam = data.frame(results(cds_inflam)) #we then find the results and assign them to a variable
+print(res_inflam)
+
+cds_both = DESeq(cds_both) #the original count dataset matrix is then replaced by the DESeq model which finds the differentially expressed genes
+res_both = data.frame(results(cds_both)) #we then find the results and assign them to a variable
+print(res_both)
+```
+
+```{r Creating a Volcano Plot}
+# Load required packages
+library(ggplot2)
+
+volcano_plot_func = function(res){
+  # Set significance threshold and log2 fold change threshold
+  sig_threshold = 0.05
+  log2FC_threshold = 1
+  
+  # Create a column for color based on significance and log2 fold change thresholds
+  res$color = ifelse((res$padj < sig_threshold & abs(res$log2FoldChange) > log2FC_threshold), "blue", "grey")
+  
+  # Create a volcano plot
+  volcano_plot = ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = color)) +
+    geom_point(size = 1.5, alpha = 0.8) +
+    scale_color_manual(values = c("grey" = "grey", "blue" = "blue")) +
+    labs(x = "log2 fold change", y = "-log10(padj)", title = "Volcano plot") +
+    theme_classic() +
+    geom_text(aes(label = row.names(res)), hjust = 0, vjust = 0) + 
+    ylim(0, 4) + 
+    xlim(-2, 2)
+  return(volcano_plot)
+}
+# Display the volcano plot
+print(volcano_plot_func(res_DFMO))
+print(volcano_plot_func(res_inflam))
+print(volcano_plot_func(res_both))
+
+
+```
+
+
+
+```{r Finding Pvalues and Log Fold Changes of Interest}
+
+sig_and_imp = function(res){
+  counter = 0 
+  diffexpgenes = c() 
+  for (row in 1:nrow(res)){ 
+    if (is.na(res[row,]$padj) == TRUE){
+      next
+    } else if (res[row,]$padj < 0.05){
+        if (res[row,]$log2FoldChange > 1 | res[row,]$log2FoldChange < -1){
+          counter = counter + 1
+          print(count)
+          diffexpgenes = append(diffexpgenes, rownames(res[row,]))
+      }
+    } 
+    }
+  return(diffexpgenes)
+}
+
+DFMO_diffexp = sig_and_imp(res_DFMO)
+inflam_diffexp = sig_and_imp(res_inflam)
+both_diffexp = sig_and_imp(res_both)
+
+print(DFMO_diffexp)
+print(inflam_diffexp)
+print(both_diffexp)
+
+```
+
+
+```{r Determining How Many Clusters to Make for Clustering}
+library(cluster)
+library(ggplot2)
+
+clustering = function(scaled_data){
+  # Create a range of cluster numbers to evaluate
+  k_range <- 2:10
+  
+  # Calculate silhouette scores for each number of clusters
+  silhouette_scores <- sapply(k_range, function(k) {
+    km <- kmeans(scaled_data, k)
+    avg_silhouette <- mean(silhouette(km$cluster, dist(scaled_data)))
+    return(avg_silhouette)
+  })
+  
+  # Plot the silhouette scores
+  ggplot(data.frame(K = k_range, Silhouette = silhouette_scores), aes(x = K, y = Silhouette)) +
+    geom_line() +
+    geom_vline(xintercept = which.max(silhouette_scores), color = "red") +
+    labs(x = "Number of clusters", y = "Silhouette score", title = "Silhouette plot") +
+    theme_classic()
+}
+#Seems like the silhouette score is best for the inflammatory differentially expressed genes at k = 9
+
+clustering(cinflam_counts_filt[inflam_diffexp,])
+clustering(cboth_counts_filt[both_diffexp,])
+
+#running this mutiple times, we see that 6, 7, or 8 clusters it the best way to split up this data.
+```
+
+```{r Doing Hierarchical Clustering}
+#Completing hierarchical clustering 
+inflam_diffexpvalues = cinflam_counts_filt[inflam_diffexp,]
+distance_mat <- dist(inflam_diffexpvalues, method = 'euclidean') #distance values are found using the dist function
+Hierar_cl <- hclust(distance_mat, method = "average") #then using hclust, the clusters are figured out
+plot(Hierar_cl)
+
+fit <- cutree(Hierar_cl, k = 8) #cutree is used to split the clustering into 8 branches
+table(fit)
+#------------------------------------------
+both_diffexpvalues = cboth_counts_filt[both_diffexp,]
+distance_mat <- dist(both_diffexpvalues, method = 'euclidean') #distance values are found using the dist function
+Hierar_cl <- hclust(distance_mat, method = "average") #then using hclust, the clusters are figured out
+plot(Hierar_cl)
+
+fit <- cutree(Hierar_cl, k = 9) #cutree is used to split the clustering into 9 branches
+table(fit)
+```
+
+```{r Creating Heatmaps}
+library(pheatmap)
+inflam_heatmap = pheatmap(inflam_diffexpvalues, scale = "row", annotation_col = cinflam_expdesign, annotation_legend = TRUE, filename = "inflam_heatmap.jpg", cellwidth = 10, cellheight = 10) #heatmap using scaling to show the msot differentially expressed genes in each treatment as well as condition.
+
+both_heatmap = pheatmap(both_diffexpvalues, scale = "row", annotation_col = cboth_expdesign, annotation_legend = TRUE, filename = "both_heatmap.jpg", cellwidth = 10, cellheight = 10)
+
+```
+
+
+```{r Getting the IDs for the genes and setting them up in a vector to be used for GO term analysis}
+#Getting the IDs for each gene and then setting them up in a vector to be used for GO term analysis
+library('org.Hs.eg.db')
+IDs_inflam = mapIds(org.Hs.eg.db, inflam_diffexp, 'ENTREZID', 'SYMBOL')
+IDs_both = mapIds(org.Hs.eg.db, both_diffexp, 'ENTREZID', 'SYMBOL')
+IDs_all = mapIds(org.Hs.eg.db, counts$Symbol, 'ENTREZID', 'SYMBOL')
+
+IDs_inflam = data.frame(IDs_inflam)
+IDs_both = data.frame(IDs_both)
+IDs_all = data.frame(IDs_all)
+
+ID_func = function(IDs){
+  IDs_vector = c()
+  for (ID in IDs$IDs){
+    if (is.na(ID) == TRUE){
+        next
+    } else {
+      IDs_vector = append(IDs_vector, ID)
+    }
+  }
+  return(IDs_vector)
+}
+
+IDs_inflam = ID_func(IDs_inflam)
+IDs_both = ID_func(IDs_both)
+IDs_all = ID_func(IDs_all)
+```
+
+```{r GO Term Analysis}
+#Running a hypergeometric test paired with GO Term analysis
+library(org.Hs.eg.db)
+library(Category)
+library(Matrix)
+library(GOstats)
+library(GO.db)
+library(graph)
+
+params_inflam = new(Class = "GOHyperGParams", geneIds = IDs_inflam, universeGeneIds = IDs_all, annotation = "org.Hs.eg", ontology = "BP", pvalueCutoff = 0.001, testDirection = "over")
+params_both = new(Class = "GOHyperGParams", geneIds = IDs_both, universeGeneIds = IDs_all, annotation = "org.Hs.eg", ontology = "BP", pvalueCutoff = 0.001, testDirection = "over")
+
+overrep_inflam = hyperGTest(params_inflam) #we then use the hypergeometric test to find which genes are over-represented
+overrep_both = hyperGTest(params_both)
+
+summary(overrep_inflam)[,c(1,2,7)] #the summary is then given with the important information, most importantly the p-values and terms
+summary(overrep_both)[,c(1,2,7)]
+
+```
+
+```{r Creating a pie chart for GO terms}
+#Creating a pie chart for GO terms
+categories = c()
+for (element in summary(overrep_inflam)[,7]){
+  if (grepl("immune", element) == TRUE | grepl("cytokine", element) == TRUE | grepl("MHC", element) == TRUE | grepl("antigen", element) == TRUE | grepl("defense", element) == TRUE | grepl("T cell", element) == TRUE | grepl("immunity", element) == TRUE | grepl("interleukin", element) == TRUE | grepl("lymphocyte", element) == TRUE | grepl("neutrophil", element) == TRUE | grepl("leukocyte", element) == TRUE | grepl("virus", element) == TRUE | grepl("interferon-gamma", element) == TRUE | grepl("chemokine", element) == TRUE){
+    categories = append(categories, "immune response associated")
+  } else if (grepl("apoptosis", element) == TRUE | grepl("cell death", element) == TRUE | grepl("stress", element) == TRUE | grepl("cytotoxicity", element) == TRUE | grepl("external stimulus", element) == TRUE | grepl("cell killing", element) == TRUE | grepl("apoptotic", element) == TRUE){
+    categories = append(categories, "stress response associated")
+  } else {
+    categories = append(categories, "other processes")
+  }
+  
+}
+go_freq_inflam <- table(categories)
+pie(go_freq_inflam)
+
+categories = c()
+for (element in summary(overrep_both)[,7]){
+  if (grepl("immune", element) == TRUE | grepl("cytokine", element) == TRUE | grepl("MHC", element) == TRUE | grepl("antigen", element) == TRUE | grepl("defense", element) == TRUE | grepl("T cell", element) == TRUE | grepl("immunity", element) == TRUE | grepl("interleukin", element) == TRUE | grepl("lymphocyte", element) == TRUE | grepl("neutrophil", element) == TRUE | grepl("leukocyte", element) == TRUE | grepl("virus", element) == TRUE | grepl("interferon-gamma", element) == TRUE | grepl("chemokine", element) == TRUE | grepl("macrophage", element) == TRUE | grepl("viral", element) == TRUE){
+    categories = append(categories, "immune response associated")
+  } else if (grepl("apoptosis", element) == TRUE | grepl("cell death", element) == TRUE | grepl("stress", element) == TRUE | grepl("cytotoxicity", element) == TRUE | grepl("external stimulus", element) == TRUE | grepl("cell killing", element) == TRUE | grepl("apoptotic", element) == TRUE | grepl("inflammatory", element) == TRUE | grepl("inflammation", element) == TRUE){
+    categories = append(categories, "stress response associated")
+  } else {
+    categories = append(categories, "other processes")
+  }
+}
+go_freq_both <- table(categories)
+pie(go_freq_both)
+
+```
+
+
+
