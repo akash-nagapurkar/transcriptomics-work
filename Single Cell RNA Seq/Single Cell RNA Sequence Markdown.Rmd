@@ -1,0 +1,158 @@
+---
+title: "HW5_AN"
+output:
+  html_document: default
+  pdf_document: default
+date: "2023-04-24"
+---
+
+```{r Step 0 - Installing and Loading the Packages}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+
+```
+
+```{r Step 1 - Load the TSV File}
+
+data = read.delim("GSM3036909.tsv") #loading the data into a variable
+
+```
+
+```{r Step 2 - Create a Seurat Object}
+
+pdac1 = CreateSeuratObject(counts = data, project = "pdac1", min.cells = 3, min.features = 200) 
+
+#this code creates a non-normalized seurat object. The parameters establish that the minimum number of cells that are present in the dataset are 3 and the minimum number of features present in the dataset are 200.
+pdac1
+
+```
+
+```{r Step 3 - Label Mitochondrial Genes}
+mito_genes = c() #setting up a mito_genes vector to isolate the mitochondrial genes
+for (element in data$Genes){ #for every gene in the data dataframe, I want to keep only the genes that have a MT- in the beginning as that indicates that the gene is a mitochondrial gene.
+  if (substr(element, 1, 3) == "MT-"){
+    mito_genes = append(mito_genes, element)
+  }
+}
+row.names(data) = data$Genes 
+data_no_gene = data[,-1] 
+
+mito_df = data_no_gene[rownames(data_no_gene) %in% mito_genes, ]
+mito_counts = colSums(mito_df != 0) #the number of mitochondrial genes that have non-zero expression for each cell is found
+total_counts = colSums(data_no_gene != 0) #the number of total genes that have non-zero expression for each cell is found. 
+percent_mito = mito_counts/total_counts * 100 #the mitochondrial gene percentage is then found
+
+pdac1[["percent.mt"]] = percent_mito #this is then asigned to pdac1's metadata.
+
+#using [[]], we put a percent.mt column in pdac1's metadata. Instead of using PercentageFeatureSet, I devised my own percentage algorithm because the Percentage Feature Set function was not working properly. See below, if I used the function, I would get 0 for all my percent.mt values.
+
+pdac1[["test_percent.mt"]] = PercentageFeatureSet(object = pdac1, pattern = "^MT-")
+head(x = pdac1@meta.data, 10)
+
+```
+
+```{r Step 4 - Visualize the Distribution}
+
+VlnPlot(object = pdac1, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3) 
+
+# Here we can visualize the pdac1 metadata to find the data that we want to prioritize for filtering.
+
+
+```
+
+```{r Step 5 - Filter the Data}
+
+pdac1 = subset(x = pdac1, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+#Here we use subset to actually filter the data, keeping the cells that have expression in more than 200 features and less than 2500 features as well as less than 5 percent mitochondrial percentage.
+
+```
+
+```{r Step 6 - Normalize Data}
+
+pdac1 = NormalizeData(object = pdac1)
+#This function from Seurat than normalizes the data by using log normalization.
+
+```
+
+```{r Step 6 - Calculate Gene Variation}
+
+pdac1 = FindVariableFeatures(object = pdac1, selection.method = "vst", nfeatures = 2000)
+top2000 = head(x = VariableFeatures(object = pdac1), 2000)
+#This code then uses Seurat functions to find the most variable genes amongst the cells and extract them, that way we can focus on the highly variable genes to find how many different cells are in our samples. 
+```
+
+```{r Step 7 - Scale Data}
+
+pdac1 <- ScaleData(object = pdac1)
+#This step scales the data using a Seurat function so that we can run a PCA
+
+```
+
+```{r Step 8 - Run PCA}
+
+pdac1 = RunPCA(object = pdac1, features = VariableFeatures(object = pdac1))
+print(x = pdac1[["pca"]], dims = 1:5, nfeatures = 5)
+#This PCA focuses on the variable features that were determined in Step 6 and consolidates them into a series of features. The print function shows the first 5 principal components. The way PCA runs is that the first PCA is the one with the most variable genes.
+```
+
+```{r Step 9 - Visualize Data with VizDimLoadings and DimPlot}
+
+VizDimLoadings(object = pdac1, dims = 1:2, reduction = "pca")
+DimPlot(object = pdac1, reduction = "pca")
+#These two plots help show some clustering based on different cell expression, but they're not the best in helping figure out which cell samples can be grouped together.
+```
+
+```{r Step 10 - PCA Heatmaps}
+
+DimHeatmap(object = pdac1, dims = 1:10, cells = 200, balanced = TRUE)
+# A heatmap helps way more in figuring out which Principal Components will help distinguish between cell types. A condensed view of this is seen below only with 200 cells and the first 10 principal components
+
+```
+
+```{r Step 11 - Dimensionality}
+
+pdac1 = JackStraw(object = pdac1, num.replicate = 100)  #JackStraw helps find p-values of significance based on the variation in principal components
+pdac1 = ScoreJackStraw(object = pdac1, dims = 1:20)
+ElbowPlot(object = pdac1) #Looking at this elbow plot, we can see that the variation can be mostly explained by the first 10 principal components. After that, it takes a big dip. 
+```
+
+
+```{r Step 12 - Clustering}
+
+pdac1 = FindNeighbors(object = pdac1, dims = 1:9)
+pdac1 = FindClusters(object = pdac1, resolution = 0.5)
+#these two lines of code finds and creates clusters of all of the principal components to determine how many clusters exist between all of the cell samples combined. From there, we can move to start distinguishing between cell types.
+
+```
+
+```{r Step 13 - Perform UMAP Analysis}
+
+pdac1 = RunUMAP(object = pdac1, dims = 1:9)
+DimPlot(object = pdac1, reduction = "umap")
+#The UMAP analysis helps us visualize the clustering by reducing the clusters down into two dimensions. This generalizes quite a bit, but cells within certain graph based clusters co-localize on these dimension plots based on how the UMAP algorithm runs. That thus yields the color coded clumps of cell samples that we see below.
+
+```
+
+```{r Step 14 - Identify Markers}
+
+pdac1.markers = FindAllMarkers(object = pdac1, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+pdac1.markers
+#We can also identify differentially expressed markers amongst all the cell samples by looking at their log fold changes and p values. Based on this, we see that genes with IDs 3438, 16289, and 5225, amongst others are very variably expressed amongst the different cell types and therefore, those might be the genes to pay close attention to. 
+
+```
+
+```{r Step 15 - Creating Violin Plot Using One Feature from each cluster}
+
+VlnPlot(object = pdac1, features = c('3438', '10636', '10349', '6649', '4009', '3135', '9409', '2136'))
+#Another violin plot lets us look at genes from all 7 clusters to see their variation. As can be seen, in most cases, many genes are specific to having mainly expression within their cluster and their cluster only. There are some exceptions such as in the case of gene 3438 and gene 10636 where you can see multiple other genes being expressed at the same time, but the main expressions are seen in clusters 0 and 1, their respective clusters in the pdac1.markers table. 
+
+```
+
+```{r Step 16 - Creating a Feature Plot Using the Same Feature as before}
+
+FeaturePlot(object = pdac1, features = c('3438', '10636', '10349', '6649', '4009', '3135', '9409', '2136'))
+#Similarly to the plot above, we can see the very localized high expression of the genes listed in their own specific clusters. The localization of each gene's expression shows us that we can find groups of cells based on variable gene expression, clustering, and the UMAP algorithm.
+
+```
+
